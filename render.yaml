@@ -1,20 +1,7 @@
-# The name of your service (must be unique within your account)
-name: argo-parser-api
-
-# The type of service to create. Can be "web", "private" or "worker".
-type: web
-
-# The environment for your code. Can be "docker", "node", "python", "ruby", etc.
-env: python
-
-# The command to start your server. Using Gunicorn (production WSGI server).
-startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
-
-# The build command to install dependencies.
-buildCommand: pip install -r requirements.txt
-
-# The port your application runs on. Render sets PORT automatically.
-port: 5000
-
-# The root directory for the service (relative to repo).
-rootDir: .
+services:
+  - type: web
+    name: argo-parser-api
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app"
+    rootDir: .
