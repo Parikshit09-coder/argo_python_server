@@ -23,6 +23,10 @@ def julian_to_datetime(juld_days):
     except Exception:
         return None
 
+# --- Helper: Replace NaNs in lists with None --- #
+def clean_list(arr):
+    return [None if (isinstance(x, float) and np.isnan(x)) else x for x in arr]
+
 # --- Parser Function --- #
 def parse_argo_file(file_path):
     try:
@@ -57,6 +61,7 @@ def parse_argo_file(file_path):
                 profile_id = f"{platform_ids[i]}_{int(ds['CYCLE_NUMBER'].values[i])}"
                 current_data_mode = bytes(data_modes[i]).decode("utf-8").strip()
 
+                # Select adjusted data if available, otherwise raw
                 if current_data_mode in ['D', 'A'] and pres_adj is not None:
                     pres_profile = pres_adj[i]
                     temp_profile = temp_adj[i]
@@ -71,6 +76,7 @@ def parse_argo_file(file_path):
                 temp_list = temp_profile.tolist()
                 psal_list = psal_profile.tolist()
 
+                # Append cleaned cycle data
                 cycle_data.append({
                     "profile_id": profile_id,
                     "wmo_float_id": platform_ids[i],
@@ -79,16 +85,17 @@ def parse_argo_file(file_path):
                     "latitude": float(ds["LATITUDE"].values[i]),
                     "longitude": float(ds["LONGITUDE"].values[i]),
                     "data_mode": current_data_mode,
-                    "pres_mean_dbar": float(np.nanmean(pres_profile)),
-                    "temp_mean_degC": float(np.nanmean(temp_profile)),
-                    "psal_mean_psu": float(np.nanmean(psal_profile)),
+                    "pres_mean_dbar": float(np.nanmean(pres_profile)) if not np.isnan(np.nanmean(pres_profile)) else None,
+                    "temp_mean_degC": float(np.nanmean(temp_profile)) if not np.isnan(np.nanmean(temp_profile)) else None,
+                    "psal_mean_psu": float(np.nanmean(psal_profile)) if not np.isnan(np.nanmean(psal_profile)) else None,
                 })
 
+                # Append full arrays cleaned of NaNs
                 full_arrays.append({
                     "profile_id": profile_id,
-                    "temp_array": temp_list,
-                    "psal_array": psal_list,
-                    "pres_array": pres_list
+                    "temp_array": clean_list(temp_list),
+                    "psal_array": clean_list(psal_list),
+                    "pres_array": clean_list(pres_list)
                 })
 
             return {"cycle_data": cycle_data, "full_arrays": full_arrays}
