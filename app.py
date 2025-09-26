@@ -1,17 +1,18 @@
 import os
 import tempfile
+import json
+import numpy as np
 import pandas as pd
 import xarray as xr
-from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
 import logging
-import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# --- Helper: Convert Argo JULD to datetime ---
+# --- Helper: Convert Argo JULD to datetime --- #
 def julian_to_datetime(juld_days):
     """Convert Argo 'JULD' (days since 1950-01-01) into ISO datetime string."""
     if pd.isna(juld_days):
@@ -22,69 +23,81 @@ def julian_to_datetime(juld_days):
     except Exception:
         return None
 
-# --- Parse Argo NetCDF file ---
+# --- Parser Function --- #
 def parse_argo_file(file_path):
     try:
         with xr.open_dataset(file_path, decode_times=False) as ds:
-            
-            # 1. Extract platform numbers (array, not scalar)
-            platform_numbers = [str(p).strip() for p in ds["PLATFORM_NUMBER"].values]
+            # Decode platform numbers
+            platform_ids = [
+                bytes(p).decode("utf-8").strip() if isinstance(p, (bytes, np.bytes_)) else str(p).strip()
+                for p in ds["PLATFORM_NUMBER"].values
+            ]
+            n_prof = len(platform_ids)
 
-            # 2. Cycle-level metadata
-            cycle_data_df = pd.DataFrame({
-                "cycle_id": ds["CYCLE_NUMBER"].values,
-                "juld_days": ds["JULD"].values,
-                "latitude": ds["LATITUDE"].values,
-                "longitude": ds["LONGITUDE"].values,
-                "data_mode": ds["DATA_MODE"].values.astype(str),
-                "wmo_float_id": platform_numbers
-            })
-            cycle_data_df["date_time_utc"] = cycle_data_df["juld_days"].apply(julian_to_datetime)
+            # Adjusted vs raw data
+            pres_adj = ds["PRES_ADJUSTED"].values if "PRES_ADJUSTED" in ds else None
+            temp_adj = ds["TEMP_ADJUSTED"].values if "TEMP_ADJUSTED" in ds else None
+            psal_adj = ds["PSAL_ADJUSTED"].values if "PSAL_ADJUSTED" in ds else None
 
-            # 3. Extract measurement variables safely
-            required_vars = ["PRES", "TEMP_ADJUSTED", "PSAL_ADJUSTED"]
-            missing_vars = [v for v in required_vars if v not in ds.variables]
-            if missing_vars:
-                raise ValueError(f"Missing variables in file: {missing_vars}")
+            pres_raw = ds["PRES"].values
+            temp_raw = ds["TEMP"].values
+            psal_raw = ds["PSAL"].values
 
-            pres = ds["PRES"].values
-            temp = ds["TEMP_ADJUSTED"].values
-            psal = ds["PSAL_ADJUSTED"].values
+            data_modes = ds["DATA_MODE"].values
 
-            n_prof, n_levels = pres.shape
-            records = []
+            # Ensure dimensions consistent
+            if pres_raw.shape[0] != n_prof:
+                pres_raw, temp_raw, psal_raw = pres_raw.T, temp_raw.T, psal_raw.T
+                if pres_adj is not None: pres_adj = pres_adj.T
+                if temp_adj is not None: temp_adj = temp_adj.T
+                if psal_adj is not None: psal_adj = psal_adj.T
 
+            cycle_data, full_arrays = [], []
             for i in range(n_prof):
-                for j in range(n_levels):
-                    # Skip entirely missing levels
-                    if np.isnan(pres[i, j]) and np.isnan(temp[i, j]) and np.isnan(psal[i, j]):
-                        continue
-                    
-                    records.append({
-                        "wmo_float_id": platform_numbers[i],
-                        "cycle_id": int(ds["CYCLE_NUMBER"].values[i]),
-                        "date_time_utc": julian_to_datetime(ds["JULD"].values[i]),
-                        "latitude": float(ds["LATITUDE"].values[i]),
-                        "longitude": float(ds["LONGITUDE"].values[i]),
-                        "pressure_dbar": float(pres[i, j]) if not np.isnan(pres[i, j]) else None,
-                        "temperature_degC": float(temp[i, j]) if not np.isnan(temp[i, j]) else None,
-                        "salinity_psu": float(psal[i, j]) if not np.isnan(psal[i, j]) else None,
-                        "data_mode": str(ds["DATA_MODE"].values[i])
-                    })
+                profile_id = f"{platform_ids[i]}_{int(ds['CYCLE_NUMBER'].values[i])}"
+                current_data_mode = bytes(data_modes[i]).decode("utf-8").strip()
 
-            measurements_df = pd.DataFrame(records)
+                if current_data_mode in ['D', 'A'] and pres_adj is not None:
+                    pres_profile = pres_adj[i]
+                    temp_profile = temp_adj[i]
+                    psal_profile = psal_adj[i]
+                else:
+                    pres_profile = pres_raw[i]
+                    temp_profile = temp_raw[i]
+                    psal_profile = psal_raw[i]
 
-            return {
-                "wmo_float_id": list(set(platform_numbers)),
-                "cycle_data": cycle_data_df.to_dict(orient="records"),
-                "measurements": measurements_df.to_dict(orient="records")
-            }
+                # Convert to lists
+                pres_list = pres_profile.tolist()
+                temp_list = temp_profile.tolist()
+                psal_list = psal_profile.tolist()
+
+                cycle_data.append({
+                    "profile_id": profile_id,
+                    "wmo_float_id": platform_ids[i],
+                    "cycle_id": int(ds["CYCLE_NUMBER"].values[i]),
+                    "date_time_utc": julian_to_datetime(ds["JULD"].values[i]),
+                    "latitude": float(ds["LATITUDE"].values[i]),
+                    "longitude": float(ds["LONGITUDE"].values[i]),
+                    "data_mode": current_data_mode,
+                    "pres_mean_dbar": float(np.nanmean(pres_profile)),
+                    "temp_mean_degC": float(np.nanmean(temp_profile)),
+                    "psal_mean_psu": float(np.nanmean(psal_profile)),
+                })
+
+                full_arrays.append({
+                    "profile_id": profile_id,
+                    "temp_array": temp_list,
+                    "psal_array": psal_list,
+                    "pres_array": pres_list
+                })
+
+            return {"cycle_data": cycle_data, "full_arrays": full_arrays}
 
     except Exception as e:
         logging.error(f"Error during NetCDF parsing: {e}")
         return {"error": str(e)}
 
-# --- Flask Route ---
+# --- Flask Route --- #
 @app.route("/upload", methods=["POST"])
 def upload_file():
     if "file" not in request.files:
@@ -102,7 +115,7 @@ def upload_file():
 
     return jsonify(result)
 
-# --- Run ---
+# --- Run --- #
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Render sets PORT, fallback 5000 for local
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
