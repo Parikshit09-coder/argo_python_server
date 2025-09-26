@@ -86,7 +86,7 @@ def parse_argo_file(file_path):
                     "longitude": float(ds["LONGITUDE"].values[i]),
                     "data_mode": current_data_mode,
                     "pres_mean_dbar": float(np.nanmean(pres_profile)) if not np.isnan(np.nanmean(pres_profile)) else None,
-                    "temp_mean_degC": float(np.nanmean(temp_profile)) if not np.isnan(np.nanmean(temp_profile)) else None,
+                    "temp_mean_degc": float(np.nanmean(temp_profile)) if not np.isnan(np.nanmean(temp_profile)) else None,
                     "psal_mean_psu": float(np.nanmean(psal_profile)) if not np.isnan(np.nanmean(psal_profile)) else None,
                 })
 
